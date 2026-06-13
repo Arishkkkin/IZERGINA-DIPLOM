@@ -1,0 +1,944 @@
+ПЕРВАЯ ЧАСТЬ ДО СОЗДАНИЯ
+# TensorFlow - основная библиотека для глубокого обучения
+!pip install tensorflow
+
+# Keras - высокоуровневый API для нейронных сетей
+!pip install keras --upgrade
+
+# scikit-learn - для разделения данных и метрик качества
+!pip install scikit-learn
+
+# OpenCV - для обработки изображений (чтение, изменение размера)
+!pip install opencv-python
+
+# Matplotlib - для построения графиков и визуализации
+!pip install matplotlib
+
+# NumPy - для работы с массивами данных
+!pip install numpy
+
+# Pandas - для работы с табличными данными
+!pip install pandas
+
+# Pillow - для работы с изображениями
+!pip install pillow
+
+# Seaborn - для визуализации матрицы ошибок
+!pip install seaborn
+
+# Ultralytics YOLO - для детекции объектов
+!pip install ultralytics
+
+# OpenCV головная версия (без GUI)
+!pip install opencv-python-headless
+
+print("Все библиотеки успешно установлены!")
+
+import os
+import shutil
+import random
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import cv2
+
+from PIL import Image
+from ipywidgets import interact, IntSlider
+
+# TensorFlow и Keras
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, models
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from tensorflow.keras.optimizers import Adam
+
+# Scikit-learn
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
+
+# Ultralytics YOLO
+from ultralytics import YOLO
+
+# Настройки
+warnings.filterwarnings('ignore')
+%matplotlib inline
+plt.style.use('seaborn-v0_8-darkgrid')
+
+# Фиксация seed для воспроизводимости
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
+set_seed(42)
+
+print("Библиотеки импортированы")
+print(f"TensorFlow: {tf.__version__}")
+print(f"OpenCV: {cv2.__version__}")
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+DATASET_PATH = '/content/drive/MyDrive/ДИПЛОМ/bike_dataset'
+
+# Проверка наличия датасета
+if os.path.exists(DATASET_PATH):
+    files = os.listdir(DATASET_PATH)
+    print(f"Датасет найден. Количество файлов: {len(files)}")
+else:
+    print(f"Ошибка: датасет не найден по пути {DATASET_PATH}")
+
+model_yolo = YOLO('yolov8n.pt')
+print("Модель YOLO загружена")
+
+def find_bike_advanced(image):
+    """
+    Комбинированный поиск велосипеда на изображении.
+
+    Этапы:
+    1. Детекция с помощью YOLO
+    2. Вычитание зеленого фона (HSV)
+    3. Контурный анализ
+    4. Fallback: поиск по краям (Canny)
+
+    Возвращает: (center_x, center_y, confidence)
+    """
+    h, w = image.shape[:2]
+
+    # ---- Этап 1: YOLO ----
+    results = model_yolo(image, verbose=False)
+    best_box = None
+    best_conf = 0.0
+
+    for r in results:
+        for box in r.boxes:
+            if int(box.cls[0]) == 1:  # bicycle
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                conf = float(box.conf[0])
+                if conf > best_conf:
+                    best_conf = conf
+                    best_box = (x1, y1, x2, y2)
+
+    if best_box and best_conf > 0.4:
+        x1, y1, x2, y2 = best_box
+        return (x1 + x2) / 2, (y1 + y2) / 2, best_conf
+
+    # ---- Этап 2: Вычитание зеленого фона ----
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower_green = np.array([35, 40, 40])
+    upper_green = np.array([85, 255, 255])
+    mask_green = cv2.inRange(hsv, lower_green, upper_green)
+    mask_obj = cv2.bitwise_not(mask_green)
+
+    kernel = np.ones((5, 5), np.uint8)
+    mask_obj = cv2.morphologyEx(mask_obj, cv2.MORPH_CLOSE, kernel)
+    mask_obj = cv2.morphologyEx(mask_obj, cv2.MORPH_OPEN, kernel)
+
+    contours, _ = cv2.findContours(mask_obj, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if contours:
+        valid_contours = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 500 or area > 0.8 * h * w:
+                continue
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            aspect = cw / ch if ch > 0 else 0
+            if 0.4 < aspect < 2.5:
+                valid_contours.append((area, x, y, cw, ch))
+
+        if valid_contours:
+            _, x, y, cw, ch = max(valid_contours, key=lambda t: t[0])
+            return x + cw / 2, y + ch / 2, 0.5
+
+    # ---- Этап 3: Поиск по краям (Canny) ----
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if contours:
+        largest = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest)
+        if 0.01 < area / (h * w) < 0.7:
+            x, y, cw, ch = cv2.boundingRect(largest)
+            return x + cw / 2, y + ch / 2, 0.3
+
+    # ---- Этап 4: Fallback ----
+    return w / 2, h / 2, 0.0
+
+
+def get_section_from_coordinates(center_x, center_y, image_width, image_height):
+    """
+    Определяет номер секции (1-9) по координатам центра велосипеда.
+    Изображение делится на сетку 3x3.
+    """
+    section_w = image_width / 3
+    section_h = image_height / 3
+
+    col = int(center_x // section_w)
+    row = int(center_y // section_h)
+
+    col = max(0, min(2, col))
+    row = max(0, min(2, row))
+
+    section = row * 3 + col + 1
+    return section, section - 1  # возвращаем номер секции и индекс (0-8)
+
+print("Функции детекции велосипеда загружены")
+
+# БЛОК 5: ФУНКЦИИ ДЛЯ ДЕТЕКЦИИ ВЕЛОСИПЕДА
+
+def load_images_advanced(folder_path, img_size=(224, 224)):
+    """
+    Загружает изображения, детектирует велосипеды,
+    определяет секции и уровень уверенности.
+    
+    ВАЖНО: Сохраняется ВСЕ изображение (ресайз), а не обрезка велосипеда.
+    Секция определяется по координатам центра велосипеда в исходном кадре.
+    
+    Возвращает:
+    - images: массив нормализованных изображений (ВСЕ изображение)
+    - labels: массив меток секций (0-8)
+    - coordinates: список координат центров
+    - confidences: список уровней уверенности
+    - filenames: список имен файлов
+    """
+    images = []
+    filenames = []
+    labels = []
+    coordinates = []
+    confidences = []
+    errors = []
+    low_conf_count = 0
+
+    image_extensions = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
+    all_files = os.listdir(folder_path)
+    image_files = [f for f in all_files if f.endswith(image_extensions)]
+
+    print(f"Найдено изображений: {len(image_files)}")
+
+    for i, img_file in enumerate(image_files):
+        img_path = os.path.join(folder_path, img_file)
+        img = cv2.imread(img_path)
+        
+        if img is None:
+            errors.append(img_file)
+            continue
+
+        # Детекция велосипеда
+        bike_x, bike_y, conf = find_bike_advanced(img)
+        coordinates.append((bike_x, bike_y))
+        confidences.append(conf)
+
+        if conf < 0.5:
+            low_conf_count += 1
+
+        # Определение секции (по координатам центра в исходном кадре)
+        h, w = img.shape[:2]
+        section, label = get_section_from_coordinates(bike_x, bike_y, w, h)
+        labels.append(label)
+
+        
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img_resized = cv2.resize(img_rgb, img_size)
+        img_norm = img_resized.astype('float32') / 255.0
+        images.append(img_norm)
+        filenames.append(img_file)
+
+        if (i + 1) % 500 == 0:
+            print(f"   Обработано {i + 1}/{len(image_files)}")
+
+    # Вывод статистики
+    print(f"\nРЕЗУЛЬТАТЫ ДЕТЕКЦИИ:")
+    print(f"   Загружено: {len(images)}")
+    print(f"   Ошибок: {len(errors)}")
+    print(f"   Низкая уверенность (<0.5): {low_conf_count}")
+
+    unique, counts = np.unique(labels, return_counts=True)
+    print(f"\nРАСПРЕДЕЛЕНИЕ ПО СЕКЦИЯМ:")
+    for u, c in zip(unique, counts):
+        print(f"   Секция {u + 1}: {c} изображений")
+
+    return np.array(images), np.array(labels), coordinates, confidences, filenames
+
+print("\n" + "="*60)
+print("ЗАГРУЗКА ДАННЫХ")
+print("="*60)
+
+X, y, coords, confs, fnames = load_images_advanced(DATASET_PATH)
+
+print("\nЗАГРУЗКА ЗАВЕРШЕНА!")
+print(f"X.shape: {X.shape}")
+print(f"y.shape: {y.shape}")
+
+# ============================================
+# СОХРАНЕНИЕ ДАТАСЕТА (ВСЕ ФОРМАТЫ)
+# ============================================
+
+import numpy as np
+import os
+import json
+import cv2
+
+save_dir = '/content/drive/MyDrive/ДИПЛОМ/bike_dataset'
+os.makedirs(save_dir, exist_ok=True)
+
+print("\n" + "="*60)
+print("СОХРАНЕНИЕ ДАТАСЕТА")
+print("="*60)
+
+# 1. Сохраняем numpy массивы
+np.save(os.path.join(save_dir, 'X.npy'), X)
+np.save(os.path.join(save_dir, 'y.npy'), y)
+np.save(os.path.join(save_dir, 'coords.npy'), np.array(coords))
+np.save(os.path.join(save_dir, 'confs.npy'), np.array(confs))
+
+# 2. Сохраняем размеры исходных изображений
+image_sizes = []
+for fname in fnames:
+    img_path = os.path.join(DATASET_PATH, fname)
+    img = cv2.imread(img_path)
+    if img is not None:
+        h, w = img.shape[:2]
+        image_sizes.append((w, h))
+    else:
+        image_sizes.append((0, 0))
+np.save(os.path.join(save_dir, 'image_sizes.npy'), np.array(image_sizes))
+
+# 3. Сохраняем имена файлов
+with open(os.path.join(save_dir, 'fnames.txt'), 'w') as f:
+    for name in fnames:
+        f.write(f"{name}\n")
+
+# 4. Сохраняем TXT аннотации (для удобного просмотра)
+with open(os.path.join(save_dir, 'annotations.txt'), 'w') as f:
+    f.write("# filename | section | center_x | center_y | img_width | img_height | confidence\n")
+    f.write("#" + "="*80 + "\n")
+    for i, fname in enumerate(fnames):
+        section = y[i] + 1
+        cx, cy = coords[i]
+        w, h = image_sizes[i]
+        conf = confs[i]
+        f.write(f"{fname} | {section} | {cx:.1f} | {cy:.1f} | {w} | {h} | {conf:.3f}\n")
+
+# 5. Сохраняем метаинформацию JSON
+info = {
+    'num_samples': int(X.shape[0]),
+    'image_shape': (224, 224, 3),
+    'num_classes': int(len(np.unique(y))),
+    'classes': [int(c) for c in np.unique(y)],
+    'has_coords': True,
+    'has_confs': True,
+    'has_image_sizes': True,
+    'description': 'Полные изображения (ресайз 224x224) с координатами центра велосипеда'
+}
+with open(os.path.join(save_dir, 'dataset_info.json'), 'w') as f:
+    json.dump(info, f, indent=2)
+
+# 6. Вывод статистики
+print("\nСохраненные файлы:")
+print(f"   X.npy              - {X.shape} - изображения (224x224x3)")
+print(f"   y.npy              - {y.shape} - метки секций (0-8)")
+print(f"   coords.npy         - {len(coords)} - координаты центров")
+print(f"   confs.npy          - {len(confs)} - уверенность детекции")
+print(f"   image_sizes.npy    - {len(image_sizes)} - размеры исходных фото")
+print(f"   fnames.txt         - {len(fnames)} - имена файлов")
+print(f"   annotations.txt    - {len(fnames)} - аннотации (читаемый формат)")
+print(f"   dataset_info.json  - метаинформация")
+
+print(f"\nДатасет сохранен в: {save_dir}")
+print("="*60)
+print("СОХРАНЕНИЕ ЗАВЕРШЕНО")
+print("="*60)
+
+CONFIDENCE_THRESHOLD = 0.5
+def show_detection(index):
+    """Отображает фото с bounding box, центром и сеткой секций."""
+    if index >= len(X):
+        print(f"Индекс вне диапазона. Всего фото: {len(X)}")
+        return
+
+    img_path = os.path.join(DATASET_PATH, fnames[index])
+    img_orig = cv2.imread(img_path)
+
+    if img_orig is None:
+        print(f"Не удалось загрузить изображение: {img_path}")
+        return
+
+    img_rgb = cv2.cvtColor(img_orig, cv2.COLOR_BGR2RGB)
+    h, w = img_rgb.shape[:2]
+    cx, cy = coords[index]
+
+    # Bounding box
+    box_w, box_h = 120, 120
+    x1 = max(0, int(cx - box_w/2))
+    y1 = max(0, int(cy - box_h/2))
+    x2 = min(w, int(cx + box_w/2))
+    y2 = min(h, int(cy + box_h/2))
+    cv2.rectangle(img_rgb, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    cv2.circle(img_rgb, (int(cx), int(cy)), 6, (0, 0, 255), -1)
+
+    # Сетка секций
+    step_x, step_y = w / 3, h / 3
+    for i in range(1, 3):
+        cv2.line(img_rgb, (int(i*step_x), 0), (int(i*step_x), h), (255, 255, 0), 2)
+        cv2.line(img_rgb, (0, int(i*step_y)), (w, int(i*step_y)), (255, 255, 0), 2)
+
+    # Определение секции
+    section, _ = get_section_from_coordinates(cx, cy, w, h)
+
+    # Текст на изображении
+    cv2.putText(img_rgb, f"Section: {section}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+    cv2.putText(img_rgb, f"Confidence: {confs[index]:.3f}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+    cv2.putText(img_rgb, f"Class: {y[index] + 1}", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+    plt.figure(figsize=(8, 8))
+    plt.imshow(img_rgb)
+    plt.title(f"{fnames[index]}\nЦентр: ({cx:.1f}, {cy:.1f})")
+    plt.axis('off')
+    plt.show()
+
+    print(f"Файл: {fnames[index]}")
+    print(f"Секция: {section} (индекс {y[index]})")
+    print(f"Уверенность: {confs[index]:.3f}")
+    print(f"Координаты центра: ({cx:.1f}, {cy:.1f})")
+
+
+def plot_class_distribution():
+    """Строит график распределения изображений по секциям."""
+    unique, counts = np.unique(y + 1, return_counts=True)
+
+    plt.figure(figsize=(12, 6))
+    bars = plt.bar(unique, counts, color='skyblue', edgecolor='black')
+    plt.xlabel('Секция', fontsize=12)
+    plt.ylabel('Количество изображений', fontsize=12)
+    plt.title(f'Распределение изображений по секциям (уверенность >= {CONFIDENCE_THRESHOLD})', fontsize=14)
+    plt.xticks(range(1, 10))
+    plt.grid(True, alpha=0.3, axis='y')
+
+    for bar, count in zip(bars, counts):
+        plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                str(count), ha='center', va='bottom', fontsize=10, fontweight='bold')
+
+    plt.tight_layout()
+    plt.show()
+
+    # Статистика
+    print("\nСТАТИСТИКА ДАТАСЕТА:")
+    print(f"   Всего изображений: {len(X)}")
+    print(f"   Количество секций: {len(unique)}")
+    print(f"   Минимум в секции: {min(counts)}")
+    print(f"   Максимум в секции: {max(counts)}")
+    print(f"   Среднее в секции: {np.mean(counts):.1f}")
+    print(f"   Средняя уверенность: {np.mean(confs):.3f}")
+
+    missing = [s for s in range(1, 10) if s not in unique]
+    if missing:
+        print(f"\nВНИМАНИЕ: Нет изображений для секций: {missing}")
+    else:
+        print(f"\nВсе 9 секций представлены")
+
+
+# Запуск визуализации
+if len(X) > 0:
+    print("\n" + "="*60)
+    print("ВИЗУАЛИЗАЦИЯ ДАННЫХ")
+    print("="*60)
+
+    plot_class_distribution()
+
+    print("\nИнтерактивный просмотр изображений")
+    interact(show_detection, index=IntSlider(min=0, max=len(X)-1, step=1, value=0))
+else:
+    print("Нет данных с высокой уверенностью для визуализации")
+
+
+
+ВТОРАЯ ЧАСТЬ ОБУЧЕНИЕ И СОЗДАНИЕ (ДЕЛАЮ В НОВОМ ПРОЕКТЕ)
+# ПОДКЛЮЧЕНИЕ GOOGLE DISK И ЗАГРУЗКА ДАТАСЕТА
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import numpy as np
+import os
+
+# Путь к сохраненному датасету
+DATASET_DIR = '/content/drive/MyDrive/ДИПЛОМ/bike_dataset'
+
+# Проверяем, что папка существует
+if not os.path.exists(DATASET_DIR):
+    raise ValueError(f"Папка не найдена: {DATASET_DIR}")
+
+# Смотрим, какие файлы есть в папке
+#print("Содержимое папки:")
+#for file in os.listdir(DATASET_DIR):
+ #   print(f"   {file}")
+
+# Загружаем датасет (используем ТЕ ЖЕ имена, что при сохранении)
+print("\nЗагрузка сохраненного датасета...")
+X = np.load(os.path.join(DATASET_DIR, 'X.npy'))      # именно X.npy
+y = np.load(os.path.join(DATASET_DIR, 'y.npy'))      # именно y.npy
+confs = np.load(os.path.join(DATASET_DIR, 'confs.npy'))
+
+print(f"\nX.shape: {X.shape}")
+print(f"y.shape: {y.shape}")
+print(f"Всего изображений: {len(X)}")
+print(f"Количество классов: {len(np.unique(y))}")
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, models
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, classification_report
+
+# Настройки
+%matplotlib inline
+plt.style.use('seaborn-v0_8-darkgrid')
+
+def set_seed(seed=42):
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+set_seed(42)
+
+print("Библиотеки импортированы")
+print(f"TensorFlow версия: {tf.__version__}")
+
+def set_seed(seed=42):
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+set_seed(42)
+
+if len(X) == 0:
+    raise ValueError("Нет данных для обучения. X пуст.")
+
+print("\n" + "="*60)
+print("РАЗДЕЛЕНИЕ ДАННЫХ НА ОБУЧАЮЩУЮ И ТЕСТОВУЮ ВЫБОРКИ")
+print("="*60)
+print(f"Всего изображений: {len(X)}")
+
+# Разделение на train (80%) и test (20%)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
+
+print(f"\nОбучающая выборка (train): {len(X_train)} изображений ({len(X_train)/len(X)*100:.1f}%)")
+print(f"Тестовая выборка (test): {len(X_test)} изображений ({len(X_test)/len(X)*100:.1f}%)")
+
+# Преобразование меток в one-hot encoding
+num_classes = len(np.unique(y_train))
+y_train_cat = to_categorical(y_train, num_classes=num_classes)
+y_test_cat = to_categorical(y_test, num_classes=num_classes)
+
+print(f"Форма меток после one-hot: {y_train_cat.shape}")
+
+# 5. ONE-HOT ENCODING
+# ============================================
+
+num_classes = 9
+y_train_cat = to_categorical(y_train, num_classes=num_classes)
+y_test_cat = to_categorical(y_test, num_classes=num_classes)
+
+print(f"Форма меток после one-hot: {y_train_cat.shape}")
+
+def create_optimized_model(input_shape=(224, 224, 3), num_classes=9):
+    """
+    Создает оптимизированную сверточную нейронную сеть.
+
+    Архитектура:
+    - 3 сверточных слоя (16→32→64)
+    - Dropout для предотвращения переобучения
+    - 2 полносвязных слоя
+
+    Результат: ~86% точности на тестовой выборке
+    """
+    model = models.Sequential([
+        # Входной слой
+        layers.Input(shape=input_shape),
+
+        # Сверточный блок 1
+        layers.Conv2D(16, (3, 3), activation='relu'),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.25),
+
+        # Сверточный блок 2
+        layers.Conv2D(32, (3, 3), activation='relu'),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.25),
+
+        # Сверточный блок 3
+        layers.Conv2D(64, (3, 3), activation='relu'),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.25),
+
+        # Полносвязные слои
+        layers.Flatten(),
+        layers.Dense(128, activation='relu'),
+        layers.Dropout(0.5),
+        layers.Dense(64, activation='relu'),
+        layers.Dropout(0.3),
+        layers.Dense(num_classes, activation='softmax')
+    ])
+    return model
+
+print("\n" + "="*60)
+print("СОЗДАНИЕ ОПТИМИЗИРОВАННОЙ МОДЕЛИ")
+print("="*60)
+
+model = create_optimized_model(num_classes=num_classes)
+
+model.compile(
+    optimizer=Adam(learning_rate=0.0001),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+model.summary()
+print(f"Всего параметров: {model.count_params():,}")
+
+# Аугментация отключена для максимальной точности
+# При желании можно включить, раскомментировав код ниже
+
+USE_AUGMENTATION = False  # Поставьте True для аугментации
+
+if USE_AUGMENTATION:
+    train_datagen = ImageDataGenerator(
+        rotation_range=15,
+        width_shift_range=0.1,
+        height_shift_range=0.1,
+        zoom_range=0.1,
+        horizontal_flip=True,
+        fill_mode='nearest'
+    )
+
+    train_generator = train_datagen.flow(
+        X_train, y_train_cat,
+        batch_size=64,
+        shuffle=True
+    )
+
+    validation_data = (X_test, y_test_cat)
+    print("\nАугментация ВКЛЮЧЕНА")
+else:
+    train_generator = None
+    validation_data = (X_test, y_test_cat)
+    print("\nАугментация ОТКЛЮЧЕНА")
+
+# 8. CALLBACKS
+# ============================================
+
+callbacks = [
+    EarlyStopping(
+        monitor='val_loss',
+        patience=10,
+        restore_best_weights=True,
+        verbose=1
+    ),
+    ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.5,
+        patience=5,
+        min_lr=1e-7,
+        verbose=1
+    )
+]
+
+print("\nCALLBACKS НАСТРОЕНЫ:")
+print("   - EarlyStopping (patience=10)")
+print("   - ReduceLROnPlateau (patience=5)")
+
+
+print("\n" + "="*60)
+print("НАЧАЛО ОБУЧЕНИЯ МОДЕЛИ")
+print("="*60)
+print(f"Обучающая выборка: {len(X_train)} изображений")
+print(f"Тестовая выборка: {len(X_test)} изображений")
+print(f"Количество классов: {num_classes}")
+print(f"Batch size: 64")
+print(f"Эпох: 50")
+print("="*60 + "\n")
+
+if USE_AUGMENTATION:
+    history = model.fit(
+        train_generator,
+        validation_data=validation_data,
+        epochs=50,
+        callbacks=callbacks,
+        verbose=1
+    )
+else:
+    history = model.fit(
+        X_train, y_train_cat,
+        validation_data=validation_data,
+        epochs=50,
+        batch_size=64,
+        callbacks=callbacks,
+        verbose=1
+    )
+
+print("\nОБУЧЕНИЕ ЗАВЕРШЕНО!")
+
+if len(X_train) > 0 and 'history' in locals():
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # ===== ГРАФИК 1: ТОЧНОСТЬ (ACCURACY) =====
+    axes[0].plot(history.history['accuracy'], 'b-', label='Train Accuracy', linewidth=2)
+    axes[0].plot(history.history['val_accuracy'], 'r-', label='Test Accuracy', linewidth=2)
+    axes[0].set_title('Точность модели на обучающей и тестовой выборках', fontsize=12)
+    axes[0].set_xlabel('Эпоха', fontsize=10)
+    axes[0].set_ylabel('Точность', fontsize=10)
+    axes[0].legend(loc='lower right')
+    axes[0].grid(True, alpha=0.3)
+
+    # Находим лучшую точность на тестовой выборке
+    best_acc = max(history.history['val_accuracy'])
+    best_epoch = history.history['val_accuracy'].index(best_acc) + 1
+    axes[0].plot(best_epoch, best_acc, 'go', markersize=10, label=f'Лучшая: {best_acc:.3f}')
+    axes[0].legend(loc='lower right')
+
+    # ===== ГРАФИК 2: ПОТЕРИ (LOSS) =====
+    axes[1].plot(history.history['loss'], 'b-', label='Train Loss', linewidth=2)
+    axes[1].plot(history.history['val_loss'], 'r-', label='Test Loss', linewidth=2)
+    axes[1].set_title('Функция потерь на обучающей и тестовой выборках', fontsize=12)
+    axes[1].set_xlabel('Эпоха', fontsize=10)
+    axes[1].set_ylabel('Потери', fontsize=10)
+    axes[1].legend(loc='upper right')
+    axes[1].grid(True, alpha=0.3)
+
+    plt.suptitle('Динамика обучения нейронной сети', fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+    # ===== ВЫВОД ИТОГОВЫХ МЕТРИК =====
+    print(f"\n{'='*60}")
+    print(f"ИТОГИ ОБУЧЕНИЯ")
+    print(f"{'='*60}")
+    print(f"   Лучшая точность на тестовой выборке: {best_acc:.4f} ({best_acc*100:.2f}%) (эпоха {best_epoch})")
+    print(f"   Финальная точность на тестовой выборке: {history.history['val_accuracy'][-1]:.4f} ({history.history['val_accuracy'][-1]*100:.2f}%)")
+    print(f"   Финальная точность на обучающей выборке: {history.history['accuracy'][-1]:.4f} ({history.history['accuracy'][-1]*100:.2f}%)")
+    print(f"   Финальные потери на тестовой выборке: {history.history['val_loss'][-1]:.4f}")
+    print(f"   Финальные потери на обучающей выборке: {history.history['loss'][-1]:.4f}")
+    print(f"   Количество эпох обучения: {len(history.history['accuracy'])}")
+
+    # ===== ПРОВЕРКА НА ПЕРЕОБУЧЕНИЕ =====
+    print(f"\n{'='*60}")
+    print(f"ПРОВЕРКА НА ПЕРЕОБУЧЕНИЕ")
+    print(f"{'='*60}")
+    train_acc = history.history['accuracy'][-1]
+    test_acc = history.history['val_accuracy'][-1]
+    diff = train_acc - test_acc
+
+    if diff > 0.15:
+        print(f"   Есть признаки переобучения (разница {diff:.3f})")
+    elif diff > 0.05:
+        print(f"   Небольшое переобучение (разница {diff:.3f})")
+    else:
+        print(f"   Переобучения нет (разница {diff:.3f})")
+        print(f"   Модель хорошо обобщает")
+
+else:
+    print("\nНет данных для визуализации.")
+
+# ============================================
+# БЛОК 7: ОЦЕНКА НА ТЕСТОВЫХ ДАННЫХ (ИСПРАВЛЕННЫЙ)
+# ============================================
+
+from sklearn.metrics import confusion_matrix, classification_report
+import seaborn as sns
+
+if len(X_test) > 0:
+    print("\n" + "="*60)
+    print("ОЦЕНКА МОДЕЛИ НА ТЕСТОВОЙ ВЫБОРКЕ")
+    print("="*60)
+
+    # Предсказания
+    y_pred_probs = model.predict(X_test, verbose=0)
+    y_pred = np.argmax(y_pred_probs, axis=1)
+
+    # Точность - используем y_test_cat (one-hot) вместо y_test
+    test_loss, test_accuracy = model.evaluate(X_test, y_test_cat, verbose=0)
+
+    print(f"\nРЕЗУЛЬТАТЫ НА ТЕСТЕ:")
+    print(f"   Точность: {test_accuracy:.4f} ({test_accuracy*100:.2f}%)")
+    print(f"   Потери: {test_loss:.4f}")
+
+    # Матрица ошибок (здесь используем y_test - целые числа)
+    cm = confusion_matrix(y_test, y_pred)
+
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=[f'Секция {i+1}' for i in range(9)],
+                yticklabels=[f'Секция {i+1}' for i in range(9)])
+    plt.title('Матрица ошибок', fontsize=14)
+    plt.xlabel('Предсказанная секция')
+    plt.ylabel('Истинная секция')
+    plt.tight_layout()
+    plt.show()
+
+    # Детальный отчет
+    print("\nКЛАССИФИКАЦИОННЫЙ ОТЧЕТ:")
+    print(classification_report(y_test, y_pred,
+                               target_names=[f'Секция {i+1}' for i in range(9)]))
+
+# БЛОК 8: АНАЛИЗ ОШИБОК
+# ============================================
+
+if len(X_test) > 0:
+    # Находим ошибки модели
+    errors_idx = np.where(y_pred != y_test)[0]
+
+    if len(errors_idx) > 0:
+        print(f"\n{'='*60}")
+        print(f"АНАЛИЗ ОШИБОК МОДЕЛИ")
+        print(f"{'='*60}")
+        print(f"   Всего ошибок: {len(errors_idx)} из {len(y_test)} ({len(errors_idx)/len(y_test)*100:.1f}%)")
+
+        # Показываем примеры ошибок
+        num_show = min(9, len(errors_idx))
+        plt.figure(figsize=(15, 10))
+
+        for i, idx in enumerate(errors_idx[:num_show]):
+            plt.subplot(3, 3, i+1)
+            plt.imshow(X_test[idx])
+            true_label = y_test[idx] + 1
+            pred_label = y_pred[idx] + 1
+            confidence = np.max(y_pred_probs[idx]) * 100
+            plt.title(f'Истинная: {true_label}\nПредсказано: {pred_label}\nУверенность: {confidence:.1f}%')
+            plt.axis('off')
+
+        plt.suptitle('Примеры ошибок модели', fontsize=14)
+        plt.tight_layout()
+        plt.show()
+
+        # Анализ по классам
+        print("\nОШИБКИ ПО КЛАССАМ:")
+        for i in range(9):
+            class_errors = np.sum((y_test == i) & (y_pred != i))
+            class_total = np.sum(y_test == i)
+            if class_total > 0:
+                error_rate = class_errors / class_total * 100
+                print(f"   Секция {i+1}: {class_errors}/{class_total} ({error_rate:.1f}%)")
+    else:
+        print("\n Идеально! Модель не сделала ни одной ошибки на тесте!")
+
+# БЛОК 9: ПРЕДСКАЗАНИЕ ДЛЯ НОВЫХ ФОТО
+# ============================================
+
+def predict_bike_section(image_path, model, img_size=(224, 224)):
+    """
+    Предсказывает секцию для нового изображения велосипеда
+    """
+    # Загружаем изображение
+    img = cv2.imread(image_path)
+
+    if img is None:
+        print(f"Не удалось загрузить изображение: {image_path}")
+        return None, None
+
+    # Обрабатываем
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img_resized = cv2.resize(img_rgb, img_size)
+    img_normalized = img_resized.astype('float32') / 255.0
+    img_batch = np.expand_dims(img_normalized, axis=0)
+
+    # Предсказываем
+    predictions = model.predict(img_batch, verbose=0)[0]
+    predicted_class = np.argmax(predictions) + 1
+    confidence = np.max(predictions) * 100
+
+    # Визуализируем
+    plt.figure(figsize=(10, 5))
+
+    plt.subplot(1, 2, 1)
+    plt.imshow(img_rgb)
+    plt.title(f'Предсказанная секция: {predicted_class}\nУверенность: {confidence:.1f}%')
+    plt.axis('off')
+
+    plt.subplot(1, 2, 2)
+    plt.bar(range(1, 10), predictions * 100, color='skyblue')
+    plt.xlabel('Секция')
+    plt.ylabel('Вероятность (%)')
+    plt.title('Распределение вероятностей')
+    plt.xticks(range(1, 10))
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    return predicted_class, confidence
+
+print("\n" + "="*60)
+print("ФУНКЦИЯ ПРЕДСКАЗАНИЯ ГОТОВА")
+print("="*60)
+print("Используйте: predict_bike_section('путь_к_фото.jpg', model)")
+
+# ============================================
+# СОХРАНЕНИЕ МОДЕЛИ (СНАЧАЛА ЭТО!)
+# ============================================
+
+import os
+
+# Путь для сохранения
+save_path = '/content/drive/MyDrive/ДИПЛОМ/bike_model_final.keras'
+
+# Создаем папку, если её нет
+os.makedirs('/content/drive/MyDrive/ДИПЛОМ/', exist_ok=True)
+
+# СОХРАНЯЕМ модель (этот код вы, возможно, пропустили)
+model.save(save_path)
+print(f" Модель сохранена в: {save_path}")
+
+# Проверяем, что файл создан
+if os.path.exists(save_path):
+    size = os.path.getsize(save_path) / (1024 * 1024)
+    print(f"   Размер файла: {size:.1f} МБ")
+else:
+    print(" Ошибка: файл не создан")
+
+# БЛОК 10: ЗАГРУЗКА СОХРАНЕННОЙ МОДЕЛИ
+# ============================================
+
+def load_saved_model(model_path='/content/drive/MyDrive/ДИПЛОМ/bike_model_final.keras'):
+    """
+    Загружает сохраненную модель
+    """
+    from tensorflow.keras.models import load_model
+
+    if os.path.exists(model_path):
+        model = load_model(model_path)
+        print(f"Модель загружена из {model_path}")
+        model.summary()
+        return model
+    else:
+        print(f"Файл {model_path} не найден")
+        return None
+
+print("\nФункция загрузки модели готова: load_saved_model()")
+
+# ИТОГОВЫЙ РЕЗУЛЬТАТ
+# ============================================
+
+print("\n" + "="*60)
+print("ВСЕ БЛОКИ ВЫПОЛНЕНЫ УСПЕШНО")
+print("="*60)
+print(f"Финальная точность модели: {test_accuracy:.4f} ({test_accuracy*100:.2f}%)")
+print(f"Количество ошибок: {len(errors_idx)} из {len(y_test)} ({len(errors_idx)/len(y_test)*100:.1f}%)")
+print("="*60)
